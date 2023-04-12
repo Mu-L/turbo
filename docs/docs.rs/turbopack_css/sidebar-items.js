@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["CssInputTransform","CssModuleAssetType"],"fn":["register"],"macro":["create_visitor"],"mod":["chunk","embed"],"struct":["CssInputTransformsVc","CssModuleAssetTypeVc","CssModuleAssetVc","ModuleCssModuleAssetVc"],"type":["CssModuleAssetTypeReadRef"]};
