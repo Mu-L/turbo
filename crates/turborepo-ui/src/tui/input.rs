@@ -4,8 +4,21 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::{event::Event, Error};
 
+#[derive(Debug, Clone, Copy)]
+pub struct InputOptions {
+    pub interact: bool,
+    pub tty_stdin: bool,
+}
 /// Return any immediately available event
-pub fn input(interact: bool) -> Result<Option<Event>, Error> {
+pub fn input(options: InputOptions) -> Result<Option<Event>, Error> {
+    let InputOptions {
+        interact,
+        tty_stdin,
+    } = options;
+    // If stdin is not a tty, then we do not attempt to read from it
+    if !tty_stdin {
+        return Ok(None);
+    }
     // poll with 0 duration will only return true if event::read won't need to wait
     // for input
     if crossterm::event::poll(Duration::from_millis(0))? {
@@ -64,7 +77,7 @@ fn ctrl_c() -> Option<Event> {
     match signal::raise(signal::SIGINT) {
         Ok(_) => None,
         // We're unable to send the signal, stop rendering to force shutdown
-        Err(_) => Some(Event::Stop),
+        Err(_) => Some(Event::InternalStop),
     }
 }
 
@@ -88,7 +101,7 @@ fn ctrl_c() -> Option<Event> {
         None
     } else {
         // We're unable to send the Ctrl-C event, stop rendering to force shutdown
-        Some(Event::Stop)
+        Some(Event::InternalStop)
     }
 }
 

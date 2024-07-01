@@ -1,9 +1,4 @@
-use std::{
-    backtrace,
-    collections::BTreeMap,
-    fmt::{Debug, Display},
-    sync::Arc,
-};
+use std::{backtrace, collections::BTreeMap, fmt::Debug, sync::Arc};
 
 use biome_deserialize::{
     json::deserialize_from_json_str, Deserializable, DeserializableValue,
@@ -13,16 +8,16 @@ use biome_diagnostics::DiagnosticExt;
 use biome_json_parser::JsonParserOptions;
 use biome_json_syntax::TextRange;
 use convert_case::{Case, Casing};
-use miette::{Diagnostic, SourceSpan};
+use miette::Diagnostic;
 use struct_iterable::Iterable;
 use thiserror::Error;
 use turbopath::AnchoredSystemPath;
-use turborepo_errors::WithMetadata;
+use turborepo_errors::{ParseDiagnostic, WithMetadata};
+use turborepo_unescape::UnescapedString;
 
 use crate::{
     run::task_id::TaskName,
     turbo_json::{Pipeline, RawTaskDefinition, RawTurboJson, Spanned},
-    unescape::UnescapedString,
 };
 
 #[derive(Debug, Error, Diagnostic)]
@@ -33,44 +28,6 @@ pub struct Error {
     diagnostics: Vec<ParseDiagnostic>,
     #[backtrace]
     backtrace: backtrace::Backtrace,
-}
-
-struct BiomeMessage<'a>(&'a biome_diagnostics::Error);
-
-impl Display for BiomeMessage<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.description(f)
-    }
-}
-
-impl From<biome_diagnostics::Error> for ParseDiagnostic {
-    fn from(diagnostic: biome_diagnostics::Error) -> Self {
-        let location = diagnostic.location();
-        let message = BiomeMessage(&diagnostic).to_string();
-        Self {
-            message,
-            source_code: location
-                .source_code
-                .map(|s| s.text.to_string())
-                .unwrap_or_default(),
-            label: location.span.map(|span| {
-                let start: usize = span.start().into();
-                let len: usize = span.len().into();
-                (start, len).into()
-            }),
-        }
-    }
-}
-
-#[derive(Debug, Error, Diagnostic)]
-#[error("{message}")]
-#[diagnostic(code(turbo_json_parse_error))]
-struct ParseDiagnostic {
-    message: String,
-    #[source_code]
-    source_code: String,
-    #[label]
-    label: Option<SourceSpan>,
 }
 
 fn create_unknown_key_diagnostic_from_struct<T: Iterable>(
@@ -147,6 +104,7 @@ impl WithMetadata for RawTurboJson {
         self.global_dependencies.add_text(text.clone());
         self.global_env.add_text(text.clone());
         self.global_pass_through_env.add_text(text.clone());
+        self.tasks.add_text(text.clone());
         self.pipeline.add_text(text);
     }
 
@@ -156,6 +114,7 @@ impl WithMetadata for RawTurboJson {
         self.global_dependencies.add_path(path.clone());
         self.global_env.add_path(path.clone());
         self.global_pass_through_env.add_path(path.clone());
+        self.tasks.add_path(path.clone());
         self.pipeline.add_path(path);
     }
 }
@@ -182,13 +141,12 @@ impl WithMetadata for RawTaskDefinition {
         if let Some(depends_on) = &mut self.depends_on {
             depends_on.value.add_text(text.clone());
         }
-        self.dot_env.add_text(text.clone());
         self.env.add_text(text.clone());
         self.inputs.add_text(text.clone());
         self.pass_through_env.add_text(text.clone());
         self.persistent.add_text(text.clone());
         self.outputs.add_text(text.clone());
-        self.output_mode.add_text(text.clone());
+        self.output_logs.add_text(text.clone());
         self.interactive.add_text(text);
     }
 
@@ -197,13 +155,12 @@ impl WithMetadata for RawTaskDefinition {
         if let Some(depends_on) = &mut self.depends_on {
             depends_on.value.add_path(path.clone());
         }
-        self.dot_env.add_path(path.clone());
         self.env.add_path(path.clone());
         self.inputs.add_path(path.clone());
         self.pass_through_env.add_path(path.clone());
         self.persistent.add_path(path.clone());
         self.outputs.add_path(path.clone());
-        self.output_mode.add_path(path.clone());
+        self.output_logs.add_path(path.clone());
         self.interactive.add_path(path);
     }
 }

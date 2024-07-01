@@ -542,7 +542,7 @@ impl Viewer {
             start,
             placeholder,
             view_mode,
-            filtered,
+            mut filtered,
         }) = queue.pop()
         {
             let line = get_line(&mut lines, line_index);
@@ -580,10 +580,9 @@ impl Viewer {
             };
             match &span {
                 QueueItem::Span(span) => {
-                    let (selected_view_mode, inherit) = self
-                        .span_options
-                        .get(&span.id())
-                        .and_then(|o| o.view_mode)
+                    let (selected_view_mode, inherit) = (!span.is_root())
+                        .then(|| self.span_options.get(&span.id()).and_then(|o| o.view_mode))
+                        .flatten()
                         .unwrap_or_else(|| {
                             (
                                 if span.is_complete() {
@@ -900,7 +899,33 @@ impl Viewer {
                 // add children to queue
                 enqueue_children(children, &mut queue);
 
+                // check if we should filter based on width or count
                 if !skipped_by_focus {
+                    let count = match &span {
+                        QueueItem::Span(_) => 1,
+                        QueueItem::SpanGraph(span_graph) => span_graph.count(),
+                        QueueItem::SpanBottomUp(bottom_up) => bottom_up.count(),
+                        QueueItem::SpanBottomUpSpan(_) => 1,
+                    };
+
+                    if let Some(false) = view_rect.count_filter.as_ref().map(|filter| match filter
+                        .op
+                    {
+                        crate::server::Op::Gt => count > filter.value as usize,
+                        crate::server::Op::Lt => count < filter.value as usize,
+                    }) {
+                        filtered = Some(FilterMode::SelectedItem)
+                    }
+
+                    if let Some(false) = view_rect.value_filter.as_ref().map(|filter| match filter
+                        .op
+                    {
+                        crate::server::Op::Gt => width > filter.value,
+                        crate::server::Op::Lt => width < filter.value,
+                    }) {
+                        filtered = Some(FilterMode::SelectedItem)
+                    }
+
                     // add span to line
                     line.push(LineEntry {
                         start,
@@ -966,7 +991,9 @@ impl Viewer {
                                 }
                             }
                             ViewSpan {
-                                id: span.id().get() as u64,
+                                id: (!span.is_root())
+                                    .then(|| span.id().get() as u64)
+                                    .unwrap_or_default(),
                                 start: entry.start,
                                 width: entry.width,
                                 category: category.to_string(),

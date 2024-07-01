@@ -10,7 +10,7 @@ use swc_core::{
         visit::{Visit, VisitWith},
     },
 };
-use turbo_tasks::Vc;
+use turbo_tasks::{RcStr, Vc};
 use turbopack_core::{issue::IssueSource, source::Source};
 
 use super::{top_level_await::has_top_level_await, JsValue, ModuleValue};
@@ -183,9 +183,9 @@ impl ImportMap {
     }
 
     // TODO this could return &str instead of String to avoid cloning
-    pub fn get_binding(&self, id: &Id) -> Option<(usize, Option<String>)> {
+    pub fn get_binding(&self, id: &Id) -> Option<(usize, Option<RcStr>)> {
         if let Some((i, i_sym)) = self.imports.get(id) {
-            return Some((*i, Some(i_sym.to_string())));
+            return Some((*i, Some(i_sym.as_str().into())));
         }
         if let Some(i) = self.namespace_imports.get(id) {
             return Some((*i, None));
@@ -268,15 +268,21 @@ impl Visit for Analyzer<'_> {
     fn visit_import_decl(&mut self, import: &ImportDecl) {
         let annotations = ImportAnnotations::parse(import.with.as_deref());
 
-        self.ensure_reference(
-            import.span,
-            import.src.value.clone(),
-            ImportedSymbol::ModuleEvaluation,
-            annotations.clone(),
-        );
+        let internal_symbol = parse_with(import.with.as_deref());
+
+        if internal_symbol.is_none() {
+            self.ensure_reference(
+                import.span,
+                import.src.value.clone(),
+                ImportedSymbol::ModuleEvaluation,
+                annotations.clone(),
+            );
+        }
 
         for s in &import.specifiers {
-            let symbol = get_import_symbol_from_import(s, import.with.as_deref());
+            let symbol = internal_symbol
+                .clone()
+                .unwrap_or_else(|| get_import_symbol_from_import(s));
             let i = self.ensure_reference(
                 import.span,
                 import.src.value.clone(),
@@ -303,6 +309,17 @@ impl Visit for Analyzer<'_> {
             };
 
             self.data.imports.insert(local, (i, orig_sym));
+        }
+
+        if import.specifiers.is_empty() {
+            if let Some(internal_symbol) = internal_symbol {
+                self.ensure_reference(
+                    import.span,
+                    import.src.value.clone(),
+                    internal_symbol,
+                    annotations,
+                );
+            }
         }
     }
 
@@ -339,15 +356,21 @@ impl Visit for Analyzer<'_> {
 
         let annotations = ImportAnnotations::parse(export.with.as_deref());
 
-        self.ensure_reference(
-            export.span,
-            src.value.clone(),
-            ImportedSymbol::ModuleEvaluation,
-            annotations.clone(),
-        );
+        let internal_symbol = parse_with(export.with.as_deref());
+
+        if internal_symbol.is_none() || export.specifiers.is_empty() {
+            self.ensure_reference(
+                export.span,
+                src.value.clone(),
+                ImportedSymbol::ModuleEvaluation,
+                annotations.clone(),
+            );
+        }
 
         for spec in export.specifiers.iter() {
-            let symbol = get_import_symbol_from_export(spec, export.with.as_deref());
+            let symbol = internal_symbol
+                .clone()
+                .unwrap_or_else(|| get_import_symbol_from_export(spec));
 
             let i =
                 self.ensure_reference(export.span, src.value.clone(), symbol, annotations.clone());
@@ -418,19 +441,12 @@ fn parse_with(with: Option<&ObjectLit>) -> Option<ImportedSymbol> {
     find_turbopack_part_id_in_asserts(with?).map(|v| match v {
         PartId::Internal(index) => ImportedSymbol::Part(index),
         PartId::ModuleEvaluation => ImportedSymbol::ModuleEvaluation,
-        PartId::Export(e) => ImportedSymbol::Symbol(e.into()),
+        PartId::Export(e) => ImportedSymbol::Symbol(e.as_str().into()),
         PartId::Exports => ImportedSymbol::Exports,
     })
 }
 
-fn get_import_symbol_from_import(
-    specifier: &ImportSpecifier,
-    with: Option<&ObjectLit>,
-) -> ImportedSymbol {
-    if let Some(part) = parse_with(with) {
-        return part;
-    }
-
+fn get_import_symbol_from_import(specifier: &ImportSpecifier) -> ImportedSymbol {
     match specifier {
         ImportSpecifier::Named(ImportNamedSpecifier {
             local, imported, ..
@@ -443,14 +459,7 @@ fn get_import_symbol_from_import(
     }
 }
 
-fn get_import_symbol_from_export(
-    specifier: &ExportSpecifier,
-    with: Option<&ObjectLit>,
-) -> ImportedSymbol {
-    if let Some(part) = parse_with(with) {
-        return part;
-    }
-
+fn get_import_symbol_from_export(specifier: &ExportSpecifier) -> ImportedSymbol {
     match specifier {
         ExportSpecifier::Named(ExportNamedSpecifier { orig, .. }) => {
             ImportedSymbol::Symbol(orig_name(orig))

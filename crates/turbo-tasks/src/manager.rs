@@ -2,7 +2,7 @@ use std::{
     borrow::Cow,
     cell::RefCell,
     future::Future,
-    hash::Hash,
+    hash::{BuildHasherDefault, Hash},
     mem::take,
     panic::AssertUnwindSafe,
     pin::Pin,
@@ -17,7 +17,7 @@ use std::{
 use anyhow::{anyhow, Result};
 use auto_hash_map::AutoMap;
 use futures::FutureExt;
-use nohash_hasher::BuildNoHashHasher;
+use rustc_hash::FxHasher;
 use serde::{de::Visitor, Deserialize, Serialize};
 use tokio::{runtime::Handle, select, task_local};
 use tracing::{info_span, instrument, trace_span, Instrument, Level};
@@ -266,7 +266,7 @@ task_local! {
     /// The current TurboTasks instance
     static TURBO_TASKS: Arc<dyn TurboTasksApi>;
 
-    static CELL_COUNTERS: RefCell<AutoMap<ValueTypeId, u32, BuildNoHashHasher<ValueTypeId>, 8>>;
+    static CELL_COUNTERS: RefCell<AutoMap<ValueTypeId, u32, BuildHasherDefault<FxHasher>, 8>>;
 
     static CURRENT_TASK_ID: TaskId;
 
@@ -871,10 +871,12 @@ impl<B: Backend + 'static> TurboTasksApi for TurboTasks<B> {
 
     fn notify_scheduled_tasks(&self) {
         let _ = CURRENT_TASK_STATE.try_with(|cell| {
-            let CurrentTaskState {
-                tasks_to_notify, ..
-            } = &mut *cell.borrow_mut();
-            let tasks = take(tasks_to_notify);
+            let tasks = {
+                let CurrentTaskState {
+                    tasks_to_notify, ..
+                } = &mut *cell.borrow_mut();
+                take(tasks_to_notify)
+            };
             if tasks.is_empty() {
                 return;
             }
@@ -1467,9 +1469,9 @@ impl CurrentCellRef {
             tt.update_own_task_cell(
                 self.current_task,
                 self.index,
-                CellContent(Some(SharedReference(
+                CellContent(Some(SharedReference::new(
                     Some(self.index.type_id),
-                    Arc::new(update),
+                    triomphe::Arc::new(update),
                 ))),
             )
         }
@@ -1491,9 +1493,9 @@ impl CurrentCellRef {
         tt.update_own_task_cell(
             self.current_task,
             self.index,
-            CellContent(Some(SharedReference(
+            CellContent(Some(SharedReference::new(
                 Some(self.index.type_id),
-                Arc::new(new_content),
+                triomphe::Arc::new(new_content),
             ))),
         )
     }

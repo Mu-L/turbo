@@ -37,7 +37,7 @@ use self::{
 use super::task_id::TaskId;
 use crate::{
     cli,
-    cli::DryRunMode,
+    cli::{DryRunMode, EnvMode},
     engine::Engine,
     opts::RunOpts,
     run::summary::{
@@ -81,26 +81,6 @@ enum RunType {
     Real,
     DryText,
     DryJson,
-}
-
-// Can't reuse `cli::EnvMode` because the serialization
-// is different (lowercase vs uppercase)
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum EnvMode {
-    Infer,
-    Loose,
-    Strict,
-}
-
-impl From<cli::EnvMode> for EnvMode {
-    fn from(env_mode: cli::EnvMode) -> Self {
-        match env_mode {
-            cli::EnvMode::Infer => EnvMode::Infer,
-            cli::EnvMode::Loose => EnvMode::Loose,
-            cli::EnvMode::Strict => EnvMode::Strict,
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -278,7 +258,7 @@ impl RunTracker {
         engine: &'a Engine,
         hash_tracker: TaskHashTracker,
         env_at_execution_start: &'a EnvironmentVariableMap,
-        has_experimental_ui: bool,
+        is_watch: bool,
     ) -> Result<(), Error> {
         let end_time = Local::now();
 
@@ -300,13 +280,13 @@ impl RunTracker {
                 run_opts,
                 packages,
                 global_hash_summary,
-                global_env_mode.into(),
+                global_env_mode,
                 task_factory,
             )
             .await?;
 
         run_summary
-            .finish(end_time, exit_code, pkg_dep_graph, ui, has_experimental_ui)
+            .finish(end_time, exit_code, pkg_dep_graph, ui, is_watch)
             .await
     }
 
@@ -381,7 +361,7 @@ impl<'a> RunSummary<'a> {
         exit_code: i32,
         pkg_dep_graph: &PackageGraph,
         ui: UI,
-        has_experimental_ui: bool,
+        is_watch: bool,
     ) -> Result<(), Error> {
         if matches!(self.run_type, RunType::DryJson | RunType::DryText) {
             return self.close_dry_run(pkg_dep_graph, ui);
@@ -393,7 +373,7 @@ impl<'a> RunSummary<'a> {
             }
         }
 
-        if !has_experimental_ui {
+        if !is_watch {
             if let Some(execution) = &self.execution {
                 let path = self.get_path();
                 let failed_tasks = self.get_failed_tasks();
@@ -503,16 +483,6 @@ impl<'a> RunSummary<'a> {
             tab_writer,
             ui,
             GREY,
-            "  Global .env Files Considered\t=\t{}",
-            self.global_hash_summary
-                .global_dot_env
-                .unwrap_or_default()
-                .len()
-        )?;
-        cwriteln!(
-            tab_writer,
-            ui,
-            GREY,
             "  Global Env Vars\t=\t{}",
             self.global_hash_summary
                 .environment_variables
@@ -567,6 +537,20 @@ impl<'a> RunSummary<'a> {
                 .as_deref()
                 .unwrap_or_default()
                 .join(", ")
+        )?;
+        cwriteln!(
+            tab_writer,
+            ui,
+            GREY,
+            "  Engines Values\t=\t{}",
+            self.global_hash_summary
+                .engines
+                .as_ref()
+                .map(|engines| engines
+                    .iter()
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .join(", "))
+                .unwrap_or_default()
         )?;
 
         tab_writer.flush()?;
@@ -660,16 +644,6 @@ impl<'a> RunSummary<'a> {
                 GREY,
                 "  Inputs Files Considered\t=\t{}",
                 task.shared.inputs.len()
-            )?;
-            cwriteln!(
-                tab_writer,
-                ui,
-                GREY,
-                "  .env Files Considered\t=\t{}",
-                task.shared
-                    .dot_env
-                    .as_ref()
-                    .map_or(0, |dot_env| dot_env.len())
             )?;
 
             cwriteln!(

@@ -79,14 +79,7 @@ pub enum PersistentTaskType {
 
 impl Display for PersistentTaskType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Native(fid, _) | Self::ResolveNative(fid, _) => {
-                Display::fmt(&registry::get_function(*fid).name, f)
-            }
-            Self::ResolveTrait(tid, n, _) => {
-                write!(f, "{}::{n}", registry::get_trait(*tid).name)
-            }
-        }
+        f.write_str(&self.get_name())
     }
 }
 
@@ -126,6 +119,23 @@ impl PersistentTaskType {
             }
         }
     }
+
+    /// Returns the name of the function in the code. Trait methods are
+    /// formatted as [`TraitName::method_name`].
+    ///
+    /// Equivalent to [`ToString::to_string`], but potentially more efficient as
+    /// it can return a `&'static str` in many cases.
+    pub fn get_name(&self) -> Cow<'static, str> {
+        match self {
+            PersistentTaskType::Native(native_fn, _)
+            | PersistentTaskType::ResolveNative(native_fn, _) => {
+                Cow::Borrowed(&registry::get_function(*native_fn).name)
+            }
+            PersistentTaskType::ResolveTrait(trait_id, fn_name, _) => {
+                format!("{}::{}", registry::get_trait(*trait_id).name, fn_name).into()
+            }
+        }
+    }
 }
 
 pub struct TaskExecutionSpec {
@@ -152,8 +162,8 @@ impl CellContent {
         let data = self.0.ok_or_else(|| anyhow!("Cell is empty"))?;
         let data = data
             .downcast()
-            .ok_or_else(|| anyhow!("Unexpected type in cell"))?;
-        Ok(ReadRef::new(data))
+            .map_err(|_err| anyhow!("Unexpected type in cell"))?;
+        Ok(ReadRef::new_arc(data))
     }
 
     /// # Safety
@@ -175,8 +185,7 @@ impl CellContent {
     }
 
     pub fn try_cast<T: Any + VcValueType>(self) -> Option<ReadRef<T>> {
-        self.0
-            .and_then(|data| data.downcast().map(|data| ReadRef::new(data)))
+        Some(ReadRef::new_arc(self.0?.downcast().ok()?))
     }
 }
 
@@ -433,5 +442,39 @@ impl PersistentTaskType {
                 Self::run_resolve_trait(trait_type, name, inputs, turbo_tasks),
             ),
         }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::{self as turbo_tasks, Vc};
+
+    #[turbo_tasks::function]
+    fn mock_func_task() -> Vc<()> {
+        Vc::cell(())
+    }
+
+    #[turbo_tasks::value_trait]
+    trait MockTrait {
+        fn mock_method_task() -> Vc<()>;
+    }
+
+    #[test]
+    fn test_get_name() {
+        crate::register();
+        assert_eq!(
+            PersistentTaskType::Native(*MOCK_FUNC_TASK_FUNCTION_ID, Vec::new()).get_name(),
+            "mock_func_task",
+        );
+        assert_eq!(
+            PersistentTaskType::ResolveTrait(
+                *MOCKTRAIT_TRAIT_TYPE_ID,
+                "mock_method_task".into(),
+                Vec::new()
+            )
+            .get_name(),
+            "MockTrait::mock_method_task",
+        );
     }
 }

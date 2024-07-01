@@ -213,9 +213,10 @@ function createPromise() {
 const turbopackQueues = Symbol("turbopack queues");
 const turbopackExports = Symbol("turbopack exports");
 const turbopackError = Symbol("turbopack error");
+let QueueStatus;
 function resolveQueue(queue) {
-    if (queue && !queue.resolved) {
-        queue.resolved = true;
+    if (queue && queue.status !== 1) {
+        queue.status = 1;
         queue.forEach((fn)=>fn.queueCount--);
         queue.forEach((fn)=>fn.queueCount-- ? fn.queueCount++ : fn());
     }
@@ -226,7 +227,7 @@ function wrapDeps(deps) {
             if (isAsyncModuleExt(dep)) return dep;
             if (isPromise(dep)) {
                 const queue = Object.assign([], {
-                    resolved: false
+                    status: 0
                 });
                 const obj = {
                     [turbopackExports]: {},
@@ -242,30 +243,39 @@ function wrapDeps(deps) {
                 return obj;
             }
         }
-        const ret = {
+        return {
             [turbopackExports]: dep,
             [turbopackQueues]: ()=>{}
         };
-        return ret;
     });
 }
 function asyncModule(module, body, hasAwait) {
     const queue = hasAwait ? Object.assign([], {
-        resolved: true
+        status: -1
     }) : undefined;
     const depQueues = new Set();
-    ensureDynamicExports(module, module.exports);
-    const exports = module.exports;
     const { resolve, reject, promise: rawPromise } = createPromise();
     const promise = Object.assign(rawPromise, {
-        [turbopackExports]: exports,
+        [turbopackExports]: module.exports,
         [turbopackQueues]: (fn)=>{
             queue && fn(queue);
             depQueues.forEach(fn);
             promise["catch"](()=>{});
         }
     });
-    module.exports = module.namespaceObject = promise;
+    const attributes = {
+        get () {
+            return promise;
+        },
+        set (v) {
+            // Calling `esmExport` leads to this.
+            if (v !== promise) {
+                promise[turbopackExports] = v;
+            }
+        }
+    };
+    Object.defineProperty(module, "exports", attributes);
+    Object.defineProperty(module, "namespaceObject", attributes);
     function handleAsyncDependencies(deps) {
         const currentDeps = wrapDeps(deps);
         const getResult = ()=>currentDeps.map((d)=>{
@@ -279,7 +289,7 @@ function asyncModule(module, body, hasAwait) {
         function fnQueue(q) {
             if (q !== queue && !depQueues.has(q)) {
                 depQueues.add(q);
-                if (q && !q.resolved) {
+                if (q && q.status === 0) {
                     fn.queueCount++;
                     q.push(fn);
                 }
@@ -292,13 +302,13 @@ function asyncModule(module, body, hasAwait) {
         if (err) {
             reject(promise[turbopackError] = err);
         } else {
-            resolve(exports);
+            resolve(promise[turbopackExports]);
         }
         resolveQueue(queue);
     }
     body(handleAsyncDependencies, asyncResult);
-    if (queue) {
-        queue.resolved = false;
+    if (queue && queue.status === -1) {
+        queue.status = 0;
     }
 }
 /**
@@ -331,7 +341,7 @@ relativeURL.prototype = URL.prototype;
  *
  * It will be appended to the runtime code of each runtime right after the
  * shared runtime utils.
- */ /* eslint-disable @next/next/no-assign-module-variable */ /// <reference path="../../../shared/runtime-utils.ts" />
+ */ /* eslint-disable @next/next/no-assign-module-variable */ /// <reference path="../../../../shared/runtime-utils.ts" />
 /// <reference path="./globals.d.ts" />
 /// <reference path="./protocol.d.ts" />
 /// <reference path="./extensions.d.ts" />
@@ -560,6 +570,7 @@ function instantiateModule(id, source) {
                 w: loadWebAssembly.bind(null, sourceInfo),
                 u: loadWebAssemblyModule.bind(null, sourceInfo),
                 g: globalThis,
+                P: resolveAbsolutePath,
                 U: relativeURL,
                 k: refresh,
                 R: createResolvePathFromModule(r),
@@ -578,6 +589,12 @@ function instantiateModule(id, source) {
     return module;
 }
 /**
+ * no-op for browser
+ * @param modulePath
+ */ function resolveAbsolutePath(modulePath) {
+    return `/ROOT/${modulePath ?? ""}`;
+}
+/**
  * NOTE(alexkirsz) Webpack has a "module execution" interception hook that
  * Next.js' React Refresh runtime hooks into to add module context to the
  * refresh registry.
@@ -586,13 +603,9 @@ function instantiateModule(id, source) {
     try {
         executeModule({
             register: globalThis.$RefreshReg$,
-            signature: globalThis.$RefreshSig$
+            signature: globalThis.$RefreshSig$,
+            registerExports: registerExportsAndSetupBoundaryForReactRefresh
         });
-        if ("$RefreshHelpers$" in globalThis) {
-            // This pattern can also be used to register the exports of
-            // a module with the React Refresh runtime.
-            registerExportsAndSetupBoundaryForReactRefresh(module, globalThis.$RefreshHelpers$);
-        }
     } catch (e) {
         throw e;
     } finally{
@@ -1009,6 +1022,9 @@ function getAffectedModuleEffects(moduleId) {
     while(nextItem = queue.shift()){
         const { moduleId, dependencyChain } = nextItem;
         if (moduleId != null) {
+            if (outdatedModules.has(moduleId)) {
+                continue;
+            }
             outdatedModules.add(moduleId);
         }
         // We've arrived at the runtime of the chunk, which means that nothing
@@ -1345,7 +1361,7 @@ globalThis.TURBOPACK_CHUNK_LISTS = {
  *
  * It will be appended to the base development runtime code.
  */ /// <reference path="../base/runtime-base.ts" />
-/// <reference path="../../../shared/require-type.d.ts" />
+/// <reference path="../../../../shared/require-type.d.ts" />
 let BACKEND;
 function augmentContext(context) {
     return context;
@@ -1558,7 +1574,11 @@ async function loadWebAssemblyModule(_source, wasmChunkPath) {
 })();
 function _eval({ code, url, map }) {
     code += `\n\n//# sourceURL=${encodeURI(location.origin + CHUNK_BASE_PATH + url)}`;
-    if (map) code += `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${btoa(map)}`;
+    if (map) {
+        code += `\n//# sourceMappingURL=data:application/json;charset=utf-8;base64,${btoa(// btoa doesn't handle nonlatin characters, so escape them as \x sequences
+        // See https://stackoverflow.com/a/26603875
+        unescape(encodeURIComponent(map)))}`;
+    }
     return eval(code);
 }
 const chunksToRegister = globalThis.TURBOPACK;

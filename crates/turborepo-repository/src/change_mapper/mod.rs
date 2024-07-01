@@ -6,6 +6,7 @@ use std::collections::HashSet;
 pub use package::{
     DefaultPackageChangeMapper, GlobalDepsPackageChangeMapper, PackageChangeMapper, PackageMapping,
 };
+use tracing::debug;
 use turbopath::{AbsoluteSystemPath, AnchoredSystemPathBuf};
 use wax::Program;
 
@@ -103,9 +104,18 @@ impl<'a, PD: PackageChangeMapper> ChangeMapper<'a, PD> {
         &self,
         files: impl Iterator<Item = &'b AnchoredSystemPathBuf>,
     ) -> PackageChanges {
+        let root_internal_deps = self.pkg_graph.root_internal_package_dependencies();
         let mut changed_packages = HashSet::new();
         for file in files {
             match self.package_detector.detect_package(file) {
+                // Internal root dependency changed so global hash has changed
+                PackageMapping::Package(pkg) if root_internal_deps.contains(&pkg) => {
+                    debug!(
+                        "root internal dependency \"{}\" changed due to: {file:?}",
+                        pkg.name
+                    );
+                    return PackageChanges::All;
+                }
                 PackageMapping::Package(pkg) => {
                     changed_packages.insert(pkg);
                 }
